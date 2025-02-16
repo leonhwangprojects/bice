@@ -85,3 +85,18 @@ func SimpleCompile(expr string, typ btf.Type) (asm.Instructions, error) {
 
 	return insns, nil
 }
+
+// SimpleInjectFilter injects the simply compiled instructions into the given
+// bpf program's stub function.
+func SimpleInjectFilter(opts InjectOptions) error {
+	if opts.Expr == "" || opts.Prog == nil || opts.StubFunc == "" || opts.Type == nil {
+		return nil
+	}
+
+	insns, err := SimpleCompile(opts.Expr, opts.Type)
+	if err != nil {
+		return err
+	}
+
+	return inject(opts, insns)
+}
