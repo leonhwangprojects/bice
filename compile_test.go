@@ -11,8 +11,9 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
-	"github.com/leonhwangprojects/bice/internal/test"
 	"rsc.io/c2go/cc"
+
+	"github.com/leonhwangprojects/bice/internal/test"
 )
 
 //go:embed testdata/vmlinux_v680_btf.o
@@ -44,7 +45,7 @@ func TestIsMemberBitfield(t *testing.T) {
 func TestExpr2offset(t *testing.T) {
 	t.Run("empty expr", func(t *testing.T) {
 		_, err := expr2offset(&cc.Expr{}, nil)
-		test.AssertHaveErr(t, err)
+		test.AssertNoErr(t, err)
 	})
 
 	t.Run("skb != 0", func(t *testing.T) {
@@ -53,7 +54,7 @@ func TestExpr2offset(t *testing.T) {
 
 		skb := getSkbBtf(t)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEmptySlice(t, ast.offsets)
 		test.AssertTrue(t, ast.lastField == skb)
@@ -68,7 +69,7 @@ func TestExpr2offset(t *testing.T) {
 		uint, err := testBtf.AnyTypeByName("unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{112})
 		test.AssertTrue(t, ast.lastField == uint)
@@ -83,7 +84,7 @@ func TestExpr2offset(t *testing.T) {
 		vlanTci, err := testBtf.AnyTypeByName("short unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{158})
 		test.AssertTrue(t, ast.lastField == vlanTci)
@@ -98,7 +99,7 @@ func TestExpr2offset(t *testing.T) {
 		protocol, err := testBtf.AnyTypeByName("short unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{180})
 		test.AssertTrue(t, ast.lastField == protocol)
@@ -113,7 +114,7 @@ func TestExpr2offset(t *testing.T) {
 		ifindex, err := testBtf.AnyTypeByName("int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{16, 224})
 		test.AssertTrue(t, ast.lastField == ifindex)
@@ -128,7 +129,7 @@ func TestExpr2offset(t *testing.T) {
 		uint, err := testBtf.AnyTypeByName("unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{16, 280, 136})
 		test.AssertTrue(t, ast.lastField == uint)
@@ -141,7 +142,7 @@ func TestExpr2offset(t *testing.T) {
 
 		skb := getSkbBtf(t)
 
-		_, err = expr2offset(expr, skb)
+		_, err = expr2offset(expr.Left, skb)
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "failed to find member xxx of sk_buff")
 	})
@@ -204,25 +205,25 @@ var testOffsetsInsnsCases = []offsetinsns{
 
 func TestOffset2insns(t *testing.T) {
 	t.Run("empty offset", func(t *testing.T) {
-		insns := offset2insns(nil, nil)
+		insns, _ := offset2insns(nil, nil, asm.R3, labelExitFail)
 		test.AssertEmptySlice(t, insns)
 	})
 
 	t.Run("offsets = [0]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[0]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [1]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[1]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [0, 1, 2]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[2]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 }
@@ -316,7 +317,7 @@ func TestTgt2insns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			insns, constant := tgt2insns(nil, tt.tgt)
+			insns, constant := tgt2insns(nil, tt.tgt, asm.R3)
 			test.AssertEqualSlice(t, insns, tt.expInsns)
 			test.AssertEqual(t, constant, tt.expConst)
 		})
