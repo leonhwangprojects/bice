@@ -41,8 +41,12 @@ func validateLeftOperand(left *cc.Expr) error {
 }
 
 func validateRightOperand(right *cc.Expr) error {
-	if right.Op != cc.Number {
-		return fmt.Errorf("unexpected right operand: %s; must be a constant number", right)
+	if right.Op != cc.Number && right.Op != cc.Name {
+		return fmt.Errorf("expect constant number or enum as right operand, got %s", right.Text)
+	}
+
+	if right.Op == cc.Name {
+		return nil
 	}
 
 	if _, err := parseNumber(right.Text); err != nil {

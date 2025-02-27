@@ -25,6 +25,52 @@ func isMemberBitfield(member *btf.Member) bool {
 	return member.Offset%8 != 0 || member.BitfieldSize%8 != 0
 }
 
+type rightInfo struct {
+	constant uint64
+	enum     string
+}
+
+func parseRightOperand(right *cc.Expr) (rightInfo, error) {
+	var ri rightInfo
+
+	switch right.Op {
+	case cc.Name:
+		ri.enum = right.Text
+
+	case cc.Number:
+		constant, err := parseNumber(right.Text)
+		if err != nil {
+			return ri, fmt.Errorf("failed to parse number %s: %w", right.Text, err)
+		}
+
+		ri.constant = constant
+	default:
+		return ri, fmt.Errorf("unexpected right operand: %v", right)
+	}
+
+	return ri, nil
+}
+
+func (ri *rightInfo) enum2const(t btf.Type) error {
+	if ri.enum == "" {
+		return nil
+	}
+
+	enum, ok := t.(*btf.Enum)
+	if !ok {
+		return fmt.Errorf("unexpected type %T for %s", t, ri.enum)
+	}
+
+	for i, value := range enum.Values {
+		if value.Name == ri.enum {
+			ri.constant = uint64(i)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%s not found in enum %s", ri.enum, enum.Name)
+}
+
 type astInfo struct {
 	offsets   []uint32
 	member    *btf.Member
@@ -259,9 +305,9 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 		return nil, fmt.Errorf("expression or right operand is nil")
 	}
 
-	tgtConst, err := parseNumber(expr.Right.Text)
+	ri, err := parseRightOperand(expr.Right)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse right operand as number: %w", err)
+		return nil, fmt.Errorf("failed to parse right operand: %w", err)
 	}
 
 	ast, err := expr2offset(expr, typ)
@@ -278,6 +324,11 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 
 	if isMemberBitfield(ast.member) {
 		return nil, fmt.Errorf("unexpected member access of bitfield")
+	}
+
+	err = ri.enum2const(typofLastField)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert enum to constant: %w", err)
 	}
 
 	var sizofLastField int
@@ -304,7 +355,7 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 
 	insns = offset2insns(insns, ast.offsets)
 
-	tgt := tgtInfo{tgtConst, typofLastField, sizofLastField, ast.bigEndian}
+	tgt := tgtInfo{ri.constant, typofLastField, sizofLastField, ast.bigEndian}
 	insns, tgt.constant = tgt2insns(insns, tgt)
 	insns, err = op2insns(insns, expr.Op, tgt)
 	if err != nil {

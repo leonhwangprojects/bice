@@ -67,6 +67,7 @@ func TestValidateRightOperand(t *testing.T) {
 	}{
 		{name: "number", right: &cc.Expr{Op: cc.Number, Text: "0x1234"}, valid: true},
 		{name: "invalid number", right: &cc.Expr{Op: cc.Number, Text: "1234a"}, valid: false},
+		{name: "name", right: &cc.Expr{Op: cc.Name, Text: "skb"}, valid: true},
 		{name: "add", right: &cc.Expr{Op: cc.Add}, valid: false},
 	}
 

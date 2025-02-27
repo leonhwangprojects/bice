@@ -35,10 +35,83 @@ func getSkbBtf(t *testing.T) *btf.Pointer {
 	return &btf.Pointer{Target: skb}
 }
 
+func getBpfProgBtf(t *testing.T) *btf.Pointer {
+	bpfProg, err := testBtf.AnyTypeByName("bpf_prog")
+	test.AssertNoErr(t, err)
+	return &btf.Pointer{Target: bpfProg}
+}
+
+func getBpfProgTypeBtf(t *testing.T) *btf.Enum {
+	enum, err := testBtf.AnyTypeByName("bpf_prog_type")
+	test.AssertNoErr(t, err)
+	return enum.(*btf.Enum)
+}
+
 func TestIsMemberBitfield(t *testing.T) {
 	test.AssertFalse(t, isMemberBitfield(nil))
 	test.AssertTrue(t, isMemberBitfield(&btf.Member{Offset: 1, BitfieldSize: 1}))
 	test.AssertFalse(t, isMemberBitfield(&btf.Member{Offset: 8, BitfieldSize: 8}))
+}
+
+func TestParseRightOperand(t *testing.T) {
+	t.Run("name", func(t *testing.T) {
+		right, err := parse("BPF_PROG_TYPE_SOCKET_FILTER")
+		test.AssertNoErr(t, err)
+
+		ri, err := parseRightOperand(right)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, ri.enum, "BPF_PROG_TYPE_SOCKET_FILTER")
+	})
+
+	t.Run("number", func(t *testing.T) {
+		right, err := parse("0x1234")
+		test.AssertNoErr(t, err)
+
+		ri, err := parseRightOperand(right)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, ri.constant, uint64(0x1234))
+	})
+
+	t.Run("unexpected right operand", func(t *testing.T) {
+		right := &cc.Expr{Text: "skb"}
+		_, err := parseRightOperand(right)
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected right operand")
+	})
+}
+
+func TestEnum2const(t *testing.T) {
+	t.Run("empty enum", func(t *testing.T) {
+		ri := rightInfo{}
+		err := ri.enum2const(nil)
+		test.AssertNoErr(t, err)
+	})
+
+	t.Run("unexpected type", func(t *testing.T) {
+		ri := rightInfo{enum: "BPF_PROG_TYPE_SOCKET_FILTER"}
+		err := ri.enum2const(getSkbBtf(t))
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected type")
+	})
+
+	t.Run("not found in enum", func(t *testing.T) {
+		enum := getBpfProgTypeBtf(t)
+
+		ri := rightInfo{enum: "BPF_PROG_TYPE_XXX"}
+		err := ri.enum2const(enum)
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "BPF_PROG_TYPE_XXX not found in enum bpf_prog_type")
+	})
+
+	t.Run("found in enum", func(t *testing.T) {
+		enum, err := testBtf.AnyTypeByName("bpf_prog_type")
+		test.AssertNoErr(t, err)
+
+		ri := rightInfo{enum: "BPF_PROG_TYPE_SOCKET_FILTER"}
+		err = ri.enum2const(enum)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, ri.constant, uint64(1))
+	})
 }
 
 func TestExpr2offset(t *testing.T) {
@@ -499,7 +572,7 @@ func TestCompile(t *testing.T) {
 
 		_, err = compile(expr, nil)
 		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "failed to parse right operand as number")
+		test.AssertStrPrefix(t, err.Error(), "failed to parse right operand")
 	})
 
 	t.Run("failed to expr2offset", func(t *testing.T) {
@@ -527,6 +600,15 @@ func TestCompile(t *testing.T) {
 		_, err = compile(expr, getSkbBtf(t))
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
+	})
+
+	t.Run("failed to convert enum to constant", func(t *testing.T) {
+		expr, err := parse("prog->type == BPF_PROG_TYPE_XXX")
+		test.AssertNoErr(t, err)
+
+		_, err = compile(expr, getBpfProgBtf(t))
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "failed to convert enum to constant")
 	})
 
 	t.Run("invalid operator", func(t *testing.T) {
