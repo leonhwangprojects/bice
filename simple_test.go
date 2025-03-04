@@ -4,7 +4,6 @@
 package bice
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -33,7 +32,7 @@ func TestSimpleCompile(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		insns, err := SimpleCompile("skb->len > 1024", getSkbBtf(t))
 		test.AssertNoErr(t, err)
-		test.AssertEqualSlice(t, insns, skbLen1024Insns)
+		test.AssertEqualSlice(t, insns, cloneSkbLen1024InsnsWithoutExitLabel())
 	})
 }
 
@@ -56,7 +55,7 @@ func TestSimpleInjectFilter(t *testing.T) {
 
 	t.Run("inject", func(t *testing.T) {
 		prog := prepareProgSpec()
-		insns := slices.Clone(skbLen1024Insns)
+		insns := cloneSkbLen1024InsnsWithoutExitLabel()
 		insns[0] = insns[0].WithMetadata(prog.Instructions[4].Metadata)
 
 		err := SimpleInjectFilter(InjectOptions{

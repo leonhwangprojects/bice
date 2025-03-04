@@ -7,12 +7,14 @@ import (
 	"bytes"
 	_ "embed"
 	"log"
+	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
-	"github.com/leonhwangprojects/bice/internal/test"
 	"rsc.io/c2go/cc"
+
+	"github.com/leonhwangprojects/bice/internal/test"
 )
 
 //go:embed testdata/vmlinux_v680_btf.o
@@ -117,7 +119,7 @@ func TestEnum2const(t *testing.T) {
 func TestExpr2offset(t *testing.T) {
 	t.Run("empty expr", func(t *testing.T) {
 		_, err := expr2offset(&cc.Expr{}, nil)
-		test.AssertHaveErr(t, err)
+		test.AssertNoErr(t, err)
 	})
 
 	t.Run("skb != 0", func(t *testing.T) {
@@ -126,7 +128,7 @@ func TestExpr2offset(t *testing.T) {
 
 		skb := getSkbBtf(t)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEmptySlice(t, ast.offsets)
 		test.AssertTrue(t, ast.lastField == skb)
@@ -141,7 +143,7 @@ func TestExpr2offset(t *testing.T) {
 		uint, err := testBtf.AnyTypeByName("unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{112})
 		test.AssertTrue(t, ast.lastField == uint)
@@ -156,7 +158,7 @@ func TestExpr2offset(t *testing.T) {
 		vlanTci, err := testBtf.AnyTypeByName("short unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{158})
 		test.AssertTrue(t, ast.lastField == vlanTci)
@@ -171,7 +173,7 @@ func TestExpr2offset(t *testing.T) {
 		protocol, err := testBtf.AnyTypeByName("short unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{180})
 		test.AssertTrue(t, ast.lastField == protocol)
@@ -186,7 +188,7 @@ func TestExpr2offset(t *testing.T) {
 		ifindex, err := testBtf.AnyTypeByName("int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{16, 224})
 		test.AssertTrue(t, ast.lastField == ifindex)
@@ -201,7 +203,7 @@ func TestExpr2offset(t *testing.T) {
 		uint, err := testBtf.AnyTypeByName("unsigned int")
 		test.AssertNoErr(t, err)
 
-		ast, err := expr2offset(expr, skb)
+		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{16, 280, 136})
 		test.AssertTrue(t, ast.lastField == uint)
@@ -214,7 +216,7 @@ func TestExpr2offset(t *testing.T) {
 
 		skb := getSkbBtf(t)
 
-		_, err = expr2offset(expr, skb)
+		_, err = expr2offset(expr.Left, skb)
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "failed to find member xxx of sk_buff")
 	})
@@ -277,25 +279,25 @@ var testOffsetsInsnsCases = []offsetinsns{
 
 func TestOffset2insns(t *testing.T) {
 	t.Run("empty offset", func(t *testing.T) {
-		insns := offset2insns(nil, nil)
+		insns, _ := offset2insns(nil, nil, asm.R3, labelExitFail)
 		test.AssertEmptySlice(t, insns)
 	})
 
 	t.Run("offsets = [0]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[0]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [1]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[1]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [0, 1, 2]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[2]
-		insns := offset2insns(nil, cas.offsets)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 }
@@ -389,7 +391,7 @@ func TestTgt2insns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			insns, constant := tgt2insns(nil, tt.tgt)
+			insns, constant := tgt2insns(nil, tt.tgt, asm.R3)
 			test.AssertEqualSlice(t, insns, tt.expInsns)
 			test.AssertEqual(t, constant, tt.expConst)
 		})
@@ -557,6 +559,42 @@ func TestOp2insns(t *testing.T) {
 	})
 }
 
+func TestCheckLastField(t *testing.T) {
+	t.Run("unexpected type", func(t *testing.T) {
+		skb := getSkbBtf(t)
+		_, err := checkLastField(nil, skb.Target)
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected type of last field")
+	})
+
+	t.Run("bitfield", func(t *testing.T) {
+		skb := getSkbBtf(t)
+		_, err := checkLastField(&btf.Member{Offset: 1, BitfieldSize: 1}, skb)
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
+	})
+
+	t.Run("size from bitfield member", func(t *testing.T) {
+		skb := getSkbBtf(t)
+		s, err := checkLastField(&btf.Member{Offset: 0, BitfieldSize: 8}, skb)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, s, 1)
+	})
+
+	t.Run("size from type", func(t *testing.T) {
+		skb := getSkbBtf(t)
+		s, err := checkLastField(nil, skb)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, s, 8)
+	})
+
+	t.Run("invalid size", func(t *testing.T) {
+		_, err := checkLastField(&btf.Member{Offset: 0, BitfieldSize: 8 * 3}, &btf.Int{})
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected size")
+	})
+}
+
 func TestCompile(t *testing.T) {
 	t.Run("nil expr", func(t *testing.T) {
 		_, err := compile(nil, nil)
@@ -584,24 +622,6 @@ func TestCompile(t *testing.T) {
 		test.AssertStrPrefix(t, err.Error(), "failed to convert expr to access offsets")
 	})
 
-	t.Run("invalid last field type", func(t *testing.T) {
-		expr, err := parse("skb->users == 0")
-		test.AssertNoErr(t, err)
-
-		_, err = compile(expr, getSkbBtf(t))
-		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "unexpected type of last field")
-	})
-
-	t.Run("unexpected bitfield", func(t *testing.T) {
-		expr, err := parse("skb->pkt_type == 0")
-		test.AssertNoErr(t, err)
-
-		_, err = compile(expr, getSkbBtf(t))
-		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
-	})
-
 	t.Run("failed to convert enum to constant", func(t *testing.T) {
 		expr, err := parse("prog->type == BPF_PROG_TYPE_XXX")
 		test.AssertNoErr(t, err)
@@ -609,6 +629,15 @@ func TestCompile(t *testing.T) {
 		_, err = compile(expr, getBpfProgBtf(t))
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "failed to convert enum to constant")
+	})
+
+	t.Run("invalid last field type", func(t *testing.T) {
+		expr, err := parse("skb->users == 0")
+		test.AssertNoErr(t, err)
+
+		_, err = compile(expr, getSkbBtf(t))
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unexpected type of last field")
 	})
 
 	t.Run("invalid operator", func(t *testing.T) {
@@ -632,7 +661,6 @@ func TestCompile(t *testing.T) {
 			asm.Mov.Reg(asm.R3, asm.R1),
 			asm.Mov.Imm(asm.R0, 1),
 			asm.JNE.Imm(asm.R3, 0, labelReturn),
-			asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail),
 			asm.Return().WithSymbol(labelReturn),
 		})
 	})
@@ -644,7 +672,38 @@ func TestCompile(t *testing.T) {
 		insns, err := compile(expr, getSkbBtf(t))
 		test.AssertNoErr(t, err)
 
-		test.AssertEqualSlice(t, insns, skbLen1024Insns)
+		test.AssertEqualSlice(t, insns, cloneSkbLen1024InsnsWithoutExitLabel())
+	})
+
+	t.Run("use label", func(t *testing.T) {
+		expr, err := parse("skb->dev->ifindex == 9")
+		test.AssertNoErr(t, err)
+
+		insns, err := compile(expr, getSkbBtf(t))
+		test.AssertNoErr(t, err)
+
+		test.AssertEqualSlice(t, insns, asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1),
+			asm.Add.Imm(asm.R3, 16),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, labelExitFail),
+			asm.Add.Imm(asm.R3, 224),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord),
+			asm.LSh.Imm(asm.R3, 32),
+			asm.RSh.Imm(asm.R3, 32),
+			asm.Mov.Imm(asm.R0, 1),
+			asm.JEq.Imm(asm.R3, 9, labelReturn),
+			asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail),
+			asm.Return().WithSymbol(labelReturn),
+		})
 	})
 }
 
@@ -662,4 +721,10 @@ var skbLen1024Insns = asm.Instructions{
 	asm.JGT.Imm(asm.R3, 1024, labelReturn),
 	asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail),
 	asm.Return().WithSymbol(labelReturn),
+}
+
+func cloneSkbLen1024InsnsWithoutExitLabel() asm.Instructions {
+	insns := slices.Clone(skbLen1024Insns)
+	insns[len(insns)-2] = insns[len(insns)-1]
+	return insns[:len(insns)-1]
 }

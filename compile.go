@@ -82,7 +82,7 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 	var ast astInfo
 
 	var exprStack []*cc.Expr
-	for left := expr.Left; left != nil; left = left.Left {
+	for left := expr; left != nil; left = left.Left {
 		exprStack = append(exprStack, left)
 	}
 
@@ -94,7 +94,7 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 
 	var offsets []uint32
 
-	prev := typ
+	prev := mybtf.UnderlyingType(typ)
 	for i, j := len(exprStack)-2, -1; i >= 0; i-- {
 		var (
 			prevName string
@@ -167,27 +167,33 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 	return ast, fmt.Errorf("unexpected expression: %s", expr)
 }
 
-func offset2insns(insns asm.Instructions, offsets []uint32) asm.Instructions {
+func offset2insns(insns asm.Instructions, offsets []uint32, dst asm.Register, labelExit string) (asm.Instructions, bool) {
+	labelUsed := false
 	lastIndex := len(offsets) - 1
 	for i := 0; i <= lastIndex; i++ {
 		if offsets[i] != 0 {
 			insns = append(insns, asm.Add.Imm(asm.R3, int32(offsets[i]))) // r3 += offset
 		}
 		insns = append(insns,
-			asm.Mov.Imm(asm.R2, 8),                      // r2 = 8; always read 8 bytes
-			asm.Mov.Reg(asm.R1, asm.R10),                // r1 = r10
-			asm.Add.Imm(asm.R1, -8),                     // r1 = r10 - 8
-			asm.FnProbeReadKernel.Call(),                // bpf_probe_read_kernel(r1, 8, r3)
-			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord), // r3 = *(r10 - 8)
+			asm.Mov.Imm(asm.R2, 8),       // r2 = 8; always read 8 bytes
+			asm.Mov.Reg(asm.R1, asm.R10), // r1 = r10
+			asm.Add.Imm(asm.R1, -8),      // r1 = r10 - 8
+			asm.FnProbeReadKernel.Call(), // bpf_probe_read_kernel(r1, 8, r3)
 		)
 		if i != lastIndex { // not last member access
+			labelUsed = true
 			insns = append(insns,
-				asm.JEq.Imm(asm.R3, 0, labelExitFail), // if r3 == 0, goto __exit
+				asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord), // r3 = *(r10 - 8)
+				asm.JEq.Imm(asm.R3, 0, labelExit),           // if r3 == 0, goto __exit
+			)
+		} else {
+			insns = append(insns,
+				asm.LoadMem(dst, asm.R10, -8, asm.DWord),
 			)
 		}
 	}
 
-	return insns
+	return insns, labelUsed
 }
 
 type tgtInfo struct {
@@ -197,16 +203,14 @@ type tgtInfo struct {
 	bigEndian bool
 }
 
-func tgt2insns(insns asm.Instructions, tgt tgtInfo) (asm.Instructions, uint64) {
-	const leftOperandReg = asm.R3
-
+func tgt2insns(insns asm.Instructions, tgt tgtInfo, reg asm.Register) (asm.Instructions, uint64) {
 	tgtConst := tgt.constant
 	switch tgt.sizof {
 	case 1:
 		tgtConst = uint64(uint8(tgtConst))
 
 		insns = append(insns,
-			asm.And.Imm(leftOperandReg, 0xFF), // r3 &= 0xff
+			asm.And.Imm(reg, 0xFF), // reg &= 0xff
 		)
 	case 2:
 		tgtConst = uint64(uint16(tgtConst))
@@ -215,7 +219,7 @@ func tgt2insns(insns asm.Instructions, tgt tgtInfo) (asm.Instructions, uint64) {
 		}
 
 		insns = append(insns,
-			asm.And.Imm(leftOperandReg, 0xFFFF), // r3 &= 0xffff
+			asm.And.Imm(reg, 0xFFFF), // reg &= 0xffff
 		)
 	case 4:
 		tgtConst = uint64(uint32(tgtConst))
@@ -224,8 +228,8 @@ func tgt2insns(insns asm.Instructions, tgt tgtInfo) (asm.Instructions, uint64) {
 		}
 
 		insns = append(insns,
-			asm.LSh.Imm(leftOperandReg, 32), // r3 <<= 32
-			asm.RSh.Imm(leftOperandReg, 32), // r3 >>= 32
+			asm.LSh.Imm(reg, 32), // reg <<= 32
+			asm.RSh.Imm(reg, 32), // reg >>= 32
 		)
 
 	case 8:
@@ -300,6 +304,33 @@ func op2insns(insns asm.Instructions, op cc.ExprOp, tgt tgtInfo) (asm.Instructio
 	return insns, nil
 }
 
+func checkLastField(member *btf.Member, t btf.Type) (int, error) {
+	t = mybtf.UnderlyingType(t)
+	switch t.(type) {
+	case *btf.Int, *btf.Enum, *btf.Pointer:
+	default:
+		return 0, fmt.Errorf("unexpected type of last field: %s", t)
+	}
+
+	if isMemberBitfield(member) {
+		return 0, fmt.Errorf("unexpected member access of bitfield")
+	}
+
+	var size int
+	if member != nil && member.BitfieldSize != 0 {
+		size = int(member.BitfieldSize.Bytes())
+	} else {
+		size, _ = btf.Sizeof(t)
+	}
+	switch size /* byte */ {
+	case 1, 2, 4, 8:
+	default:
+		return 0, fmt.Errorf("unexpected size %d of last field type %s", size, t)
+	}
+
+	return size, nil
+}
+
 func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 	if expr == nil || expr.Right == nil {
 		return nil, fmt.Errorf("expression or right operand is nil")
@@ -310,40 +341,19 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 		return nil, fmt.Errorf("failed to parse right operand: %w", err)
 	}
 
-	ast, err := expr2offset(expr, typ)
+	ast, err := expr2offset(expr.Left, typ)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert expr to access offsets: %w", err)
 	}
 
-	typofLastField := mybtf.UnderlyingType(ast.lastField)
-	switch typofLastField.(type) {
-	case *btf.Int, *btf.Enum, *btf.Pointer:
-	default:
-		return nil, fmt.Errorf("unexpected type of last field: %s", typofLastField)
-	}
-
-	if isMemberBitfield(ast.member) {
-		return nil, fmt.Errorf("unexpected member access of bitfield")
-	}
-
-	err = ri.enum2const(typofLastField)
+	err = ri.enum2const(ast.lastField)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert enum to constant: %w", err)
 	}
 
-	var sizofLastField int
-	if ast.member != nil && ast.member.BitfieldSize != 0 {
-		sizofLastField = int(ast.member.BitfieldSize.Bytes())
-	} else {
-		sizofLastField, err = btf.Sizeof(typofLastField)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get size of last field type: %w", err)
-		}
-	}
-	switch sizofLastField /* byte */ {
-	case 1, 2, 4, 8:
-	default:
-		return nil, fmt.Errorf("unexpected size %d of last field type %s", sizofLastField, typofLastField)
+	sizofLastField, err := checkLastField(ast.member, ast.lastField)
+	if err != nil {
+		return nil, err
 	}
 
 	// Use R1/R2/R3 caller-saved registers directly.
@@ -353,18 +363,22 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 		asm.Mov.Reg(asm.R3, asm.R1), // r3 = r1
 	)
 
-	insns = offset2insns(insns, ast.offsets)
+	insns, labelUsed := offset2insns(insns, ast.offsets, asm.R3, labelExitFail)
 
-	tgt := tgtInfo{ri.constant, typofLastField, sizofLastField, ast.bigEndian}
-	insns, tgt.constant = tgt2insns(insns, tgt)
+	tgt := tgtInfo{ri.constant, ast.lastField, sizofLastField, ast.bigEndian}
+	insns, tgt.constant = tgt2insns(insns, tgt, asm.R3)
 	insns, err = op2insns(insns, expr.Op, tgt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert operator to instructions: %w", err)
 	}
 
+	if labelUsed {
+		insns = append(insns,
+			asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail), // r0 = 0; __exit
+		)
+	}
 	insns = append(insns,
-		asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail), // r0 = 0; __exit
-		asm.Return().WithSymbol(labelReturn),             // return; __return
+		asm.Return().WithSymbol(labelReturn), // return; __return
 	)
 
 	return insns, nil
