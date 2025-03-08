@@ -49,6 +49,12 @@ func getBpfProgTypeBtf(t *testing.T) *btf.Enum {
 	return enum.(*btf.Enum)
 }
 
+func getU64Btf(t *testing.T) btf.Type {
+	u64, err := testBtf.AnyTypeByName("u64")
+	test.AssertNoErr(t, err)
+	return u64
+}
+
 func TestIsMemberBitfield(t *testing.T) {
 	test.AssertFalse(t, isMemberBitfield(nil))
 	test.AssertTrue(t, isMemberBitfield(&btf.Member{Offset: 1, BitfieldSize: 1}))
@@ -133,6 +139,17 @@ func TestExpr2offset(t *testing.T) {
 		test.AssertEmptySlice(t, ast.offsets)
 		test.AssertTrue(t, ast.lastField == skb)
 		test.AssertFalse(t, ast.bigEndian)
+	})
+
+	t.Run("(u64)skb != 0", func(t *testing.T) {
+		expr, err := parse("skb != 0")
+		test.AssertNoErr(t, err)
+
+		u64 := getU64Btf(t)
+		ast, err := expr2offset(expr.Left, u64)
+		test.AssertNoErr(t, err)
+		test.AssertEmptySlice(t, ast.offsets)
+		test.AssertTrue(t, ast.lastField == u64)
 	})
 
 	t.Run("skb->len > 1024", func(t *testing.T) {
@@ -661,6 +678,7 @@ func TestCompile(t *testing.T) {
 			asm.Mov.Reg(asm.R3, asm.R1),
 			asm.Mov.Imm(asm.R0, 1),
 			asm.JNE.Imm(asm.R3, 0, labelReturn),
+			asm.Xor.Reg(asm.R0, asm.R0),
 			asm.Return().WithSymbol(labelReturn),
 		})
 	})
@@ -701,7 +719,7 @@ func TestCompile(t *testing.T) {
 			asm.RSh.Imm(asm.R3, 32),
 			asm.Mov.Imm(asm.R0, 1),
 			asm.JEq.Imm(asm.R3, 9, labelReturn),
-			asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail),
+			asm.Xor.Reg(asm.R0, asm.R0).WithSymbol(labelExitFail),
 			asm.Return().WithSymbol(labelReturn),
 		})
 	})
@@ -719,12 +737,12 @@ var skbLen1024Insns = asm.Instructions{
 	asm.RSh.Imm(asm.R3, 32),
 	asm.Mov.Imm(asm.R0, 1),
 	asm.JGT.Imm(asm.R3, 1024, labelReturn),
-	asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail),
+	asm.Xor.Reg(asm.R0, asm.R0).WithSymbol(labelExitFail),
 	asm.Return().WithSymbol(labelReturn),
 }
 
 func cloneSkbLen1024InsnsWithoutExitLabel() asm.Instructions {
 	insns := slices.Clone(skbLen1024Insns)
-	insns[len(insns)-2] = insns[len(insns)-1]
-	return insns[:len(insns)-1]
+	insns[len(insns)-2] = insns[len(insns)-2].WithMetadata(asm.Metadata{})
+	return insns
 }

@@ -372,12 +372,12 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 		return nil, fmt.Errorf("failed to convert operator to instructions: %w", err)
 	}
 
+	xorR0 := asm.Xor.Reg(asm.R0, asm.R0)
 	if labelUsed {
-		insns = append(insns,
-			asm.Mov.Imm(asm.R0, 0).WithSymbol(labelExitFail), // r0 = 0; __exit
-		)
+		xorR0 = xorR0.WithSymbol(labelExitFail)
 	}
 	insns = append(insns,
+		xorR0,                                // r0 = 0
 		asm.Return().WithSymbol(labelReturn), // return; __return
 	)
 
