@@ -4,15 +4,23 @@
 package bice
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/leonhwangprojects/bice/internal/test"
 )
 
 func TestSimpleCompile(t *testing.T) {
+	t.Run("non-pointer type", func(t *testing.T) {
+		_, err := SimpleCompile("skb->len > 1024", &btf.Int{})
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), fmt.Sprintf("type(%s) is not a pointer", &btf.Int{}))
+	})
+
 	t.Run("failed to parse", func(t *testing.T) {
-		_, err := SimpleCompile("a)(test)", nil)
+		_, err := SimpleCompile("a)(test)", getSkbBtf(t))
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "failed to parse expression")
 	})

@@ -6,6 +6,7 @@ package bice
 import (
 	"fmt"
 
+	"github.com/Asphaltt/mybtf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -69,6 +70,10 @@ import (
 // The operator must be one of the following: =, ==, !=, <, <=, >, >=. '=' is
 // used for comparison too.
 func SimpleCompile(expr string, typ btf.Type) (asm.Instructions, error) {
+	if _, isPtr := mybtf.UnderlyingType(typ).(*btf.Pointer); !isPtr {
+		return nil, fmt.Errorf("type(%s) is not a pointer", typ)
+	}
+
 	ast, err := parse(expr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse expression(%s): %w", expr, err)
