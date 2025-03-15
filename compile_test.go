@@ -10,6 +10,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Asphaltt/mybtf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"rsc.io/c2go/cc"
@@ -53,6 +54,12 @@ func getU64Btf(t *testing.T) btf.Type {
 	u64, err := testBtf.AnyTypeByName("u64")
 	test.AssertNoErr(t, err)
 	return u64
+}
+
+func getKobjBtf(t *testing.T) *btf.Pointer {
+	kobj, err := testBtf.AnyTypeByName("kobject")
+	test.AssertNoErr(t, err)
+	return &btf.Pointer{Target: kobj}
 }
 
 func TestIsMemberBitfield(t *testing.T) {
@@ -178,7 +185,7 @@ func TestExpr2offset(t *testing.T) {
 		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{158})
-		test.AssertTrue(t, ast.lastField == vlanTci)
+		test.AssertTrue(t, mybtf.UnderlyingType(ast.lastField) == vlanTci)
 		test.AssertFalse(t, ast.bigEndian)
 	})
 
@@ -193,7 +200,7 @@ func TestExpr2offset(t *testing.T) {
 		ast, err := expr2offset(expr.Left, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqualSlice(t, ast.offsets, []uint32{180})
-		test.AssertTrue(t, ast.lastField == protocol)
+		test.AssertTrue(t, mybtf.UnderlyingType(ast.lastField) == protocol)
 		test.AssertTrue(t, ast.bigEndian)
 	})
 
@@ -292,29 +299,57 @@ var testOffsetsInsnsCases = []offsetinsns{
 			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord),
 		},
 	},
+	{
+		offsets: []uint32{0, 1, 2},
+		insns: asm.Instructions{
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, labelExitFail),
+
+			asm.Add.Imm(asm.R3, 1),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.R10, -8, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, labelExitFail),
+
+			asm.Add.Imm(asm.R3, 2),
+			asm.Mov.Reg(asm.R1, asm.R3),
+		},
+	},
 }
 
 func TestOffset2insns(t *testing.T) {
 	t.Run("empty offset", func(t *testing.T) {
-		insns, _ := offset2insns(nil, nil, asm.R3, labelExitFail)
+		insns, _ := offset2insns(nil, nil, asm.R3, labelExitFail, false)
 		test.AssertEmptySlice(t, insns)
 	})
 
 	t.Run("offsets = [0]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[0]
-		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail, false)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [1]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[1]
-		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail, false)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 
 	t.Run("offsets = [0, 1, 2]", func(t *testing.T) {
 		cas := testOffsetsInsnsCases[2]
-		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail)
+		insns, _ := offset2insns(nil, cas.offsets, asm.R3, labelExitFail, false)
+		test.AssertEqualSlice(t, insns, cas.insns)
+	})
+
+	t.Run("dont read last field", func(t *testing.T) {
+		cas := testOffsetsInsnsCases[3]
+		insns, _ := offset2insns(nil, cas.offsets, asm.R1, labelExitFail, true)
 		test.AssertEqualSlice(t, insns, cas.insns)
 	})
 }

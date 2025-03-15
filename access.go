@@ -6,6 +6,7 @@ package bice
 import (
 	"fmt"
 
+	"github.com/Asphaltt/mybtf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -21,6 +22,7 @@ type AccessOptions struct {
 
 type AccessResult struct {
 	Insns     asm.Instructions
+	LastField btf.Type
 	LabelUsed bool
 }
 
@@ -48,22 +50,30 @@ func Access(opts AccessOptions) (AccessResult, error) {
 		return AccessResult{}, fmt.Errorf("expr should be struct/union member access")
 	}
 
-	size, err := checkLastField(offsets.member, offsets.lastField)
-	if err != nil {
-		return AccessResult{}, err
+	var size int
+	isStr := mybtf.IsConstCharPtr(offsets.lastField)
+	isArr := mybtf.IsCharArray(offsets.lastField)
+	if isStr || isArr {
+		size = 8
+	} else {
+		size, err = checkLastField(offsets.member, offsets.lastField)
+		if err != nil {
+			return AccessResult{}, err
+		}
 	}
 
 	insns := opts.Insns
 	if opts.Src != asm.R3 {
 		insns = append(insns, asm.Mov.Reg(asm.R3, opts.Src))
 	}
-	insns, labelUsed := offset2insns(insns, offsets.offsets, opts.Dst, opts.LabelExit)
+	insns, labelUsed := offset2insns(insns, offsets.offsets, opts.Dst, opts.LabelExit, isArr)
 
 	tgt := tgtInfo{0, offsets.lastField, size, offsets.bigEndian}
 	insns, _ = tgt2insns(insns, tgt, opts.Dst)
 
 	return AccessResult{
 		Insns:     insns,
+		LastField: offsets.lastField,
 		LabelUsed: labelUsed,
 	}, nil
 }

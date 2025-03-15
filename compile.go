@@ -153,7 +153,7 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 			if i == 0 {
 				ast.offsets = offsets
 				ast.member = member
-				ast.lastField = prev
+				ast.lastField = member.Type
 				ast.bigEndian = mybtf.IsBigEndian(member.Type)
 				return ast, nil
 			}
@@ -167,12 +167,18 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 	return ast, fmt.Errorf("unexpected expression: %s", expr)
 }
 
-func offset2insns(insns asm.Instructions, offsets []uint32, dst asm.Register, labelExit string) (asm.Instructions, bool) {
+func offset2insns(insns asm.Instructions, offsets []uint32, dst asm.Register, labelExit string, dontReadLastField bool) (asm.Instructions, bool) {
 	labelUsed := false
 	lastIndex := len(offsets) - 1
 	for i := 0; i <= lastIndex; i++ {
 		if offsets[i] != 0 {
 			insns = append(insns, asm.Add.Imm(asm.R3, int32(offsets[i]))) // r3 += offset
+		}
+		if i == lastIndex && dontReadLastField {
+			if dst != asm.R3 {
+				insns = append(insns, asm.Mov.Reg(dst, asm.R3))
+			}
+			break
 		}
 		insns = append(insns,
 			asm.Mov.Imm(asm.R2, 8),       // r2 = 8; always read 8 bytes
@@ -363,7 +369,7 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 		asm.Mov.Reg(asm.R3, asm.R1), // r3 = r1
 	)
 
-	insns, labelUsed := offset2insns(insns, ast.offsets, asm.R3, labelExitFail)
+	insns, labelUsed := offset2insns(insns, ast.offsets, asm.R3, labelExitFail, false)
 
 	tgt := tgtInfo{ri.constant, ast.lastField, sizofLastField, ast.bigEndian}
 	insns, tgt.constant = tgt2insns(insns, tgt, asm.R3)

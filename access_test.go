@@ -67,6 +67,50 @@ func TestAccess(t *testing.T) {
 		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
 	})
 
+	t.Run("skb->dev->name", func(t *testing.T) {
+		insns, err := Access(AccessOptions{
+			Expr:      "skb->dev->name",
+			Type:      getSkbBtf(t),
+			Src:       asm.R1,
+			Dst:       asm.R3,
+			Insns:     nil,
+			LabelExit: labelExitFail,
+		})
+		test.AssertNoErr(t, err)
+		test.AssertTrue(t, insns.LabelUsed)
+		test.AssertEqualSlice(t, insns.Insns, asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1),
+			asm.Add.Imm(asm.R3, 16),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.RFP, -8, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, labelExitFail),
+			asm.Add.Imm(asm.R3, 304),
+		})
+	})
+
+	t.Run("kobj->name", func(t *testing.T) {
+		insns, err := Access(AccessOptions{
+			Expr:      "kobj->name",
+			Type:      getKobjBtf(t),
+			Src:       asm.R1,
+			Dst:       asm.R3,
+			Insns:     nil,
+			LabelExit: labelExitFail,
+		})
+		test.AssertNoErr(t, err)
+		test.AssertEqualSlice(t, insns.Insns, asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.RFP, -8, asm.DWord),
+		})
+	})
+
 	t.Run("skb->len", func(t *testing.T) {
 		insns, err := Access(AccessOptions{
 			Expr:      "skb->len",
