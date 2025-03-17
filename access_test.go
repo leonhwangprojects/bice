@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
+
 	"github.com/leonhwangprojects/bice/internal/test"
 )
 
@@ -59,12 +60,12 @@ func TestAccess(t *testing.T) {
 
 	t.Run("failed to check last field", func(t *testing.T) {
 		_, err := Access(AccessOptions{
-			Expr:      "skb->pkt_type",
+			Expr:      "skb->users",
 			Type:      getSkbBtf(t),
 			LabelExit: labelExitFail,
 		})
 		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
+		test.AssertStrPrefix(t, err.Error(), "unexpected type of last field")
 	})
 
 	t.Run("skb->dev->name", func(t *testing.T) {
@@ -133,5 +134,25 @@ func TestAccess(t *testing.T) {
 			asm.RSh.Imm(asm.R3, 32),
 		})
 		test.AssertEqual(t, insns.LabelUsed, false)
+	})
+
+	t.Run("skb->pkt_type", func(t *testing.T) {
+		res, err := Access(AccessOptions{
+			Expr:      "skb->pkt_type",
+			Type:      getSkbBtf(t),
+			Src:       asm.R3,
+			Dst:       asm.R3,
+			Insns:     nil,
+			LabelExit: labelExitFail,
+		})
+		test.AssertNoErr(t, err)
+		test.AssertEqualSlice(t, res.Insns, asm.Instructions{
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.RFP, -8, asm.DWord),
+			asm.And.Imm(asm.R3, 0x7),
+		})
 	})
 }

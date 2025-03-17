@@ -62,12 +62,6 @@ func getKobjBtf(t *testing.T) *btf.Pointer {
 	return &btf.Pointer{Target: kobj}
 }
 
-func TestIsMemberBitfield(t *testing.T) {
-	test.AssertFalse(t, isMemberBitfield(nil))
-	test.AssertTrue(t, isMemberBitfield(&btf.Member{Offset: 1, BitfieldSize: 1}))
-	test.AssertFalse(t, isMemberBitfield(&btf.Member{Offset: 8, BitfieldSize: 8}))
-}
-
 func TestParseRightOperand(t *testing.T) {
 	t.Run("name", func(t *testing.T) {
 		right, err := parse("BPF_PROG_TYPE_SOCKET_FILTER")
@@ -244,6 +238,20 @@ func TestExpr2offset(t *testing.T) {
 		test.AssertHaveErr(t, err)
 		test.AssertStrPrefix(t, err.Error(), "failed to find member xxx of sk_buff")
 	})
+
+	t.Run("prog->call_get_func_ip == 0", func(t *testing.T) {
+		expr, err := parse("prog->call_get_func_ip == 0")
+		test.AssertNoErr(t, err)
+
+		prog := getBpfProgBtf(t)
+
+		ast, err := expr2offset(expr.Left, prog)
+		test.AssertNoErr(t, err)
+		test.AssertEqual(t, ast.member != nil, true)
+		test.AssertEqual(t, ast.member.Offset.Bytes(), 3)
+		test.AssertEqual(t, len(ast.offsets), 1)
+		test.AssertEqual(t, ast.offsets[0], 3)
+	})
 }
 
 type offsetinsns struct {
@@ -351,6 +359,33 @@ func TestOffset2insns(t *testing.T) {
 		cas := testOffsetsInsnsCases[3]
 		insns, _ := offset2insns(nil, cas.offsets, asm.R1, labelExitFail, true)
 		test.AssertEqualSlice(t, insns, cas.insns)
+	})
+}
+
+func TestBitfield2insns(t *testing.T) {
+	t.Run("non-zero delta", func(t *testing.T) {
+		var member btf.Member
+		member.Offset = 1
+		member.BitfieldSize = 1
+
+		insns, cnst := bitfield2insns(nil, 3, &member, asm.R3)
+		test.AssertEqualSlice(t, insns, asm.Instructions{
+			asm.RSh.Imm(asm.R3, 1),
+			asm.And.Imm(asm.R3, 1),
+		})
+		test.AssertEqual(t, cnst, 1)
+	})
+
+	t.Run("zero delta", func(t *testing.T) {
+		var member btf.Member
+		member.Offset = 8
+		member.BitfieldSize = 1
+
+		insns, cnst := bitfield2insns(nil, 3, &member, asm.R3)
+		test.AssertEqualSlice(t, insns, asm.Instructions{
+			asm.And.Imm(asm.R3, 1),
+		})
+		test.AssertEqual(t, cnst, 1)
 	})
 }
 
@@ -612,6 +647,25 @@ func TestOp2insns(t *testing.T) {
 }
 
 func TestCheckLastField(t *testing.T) {
+	t.Run("invalid bitfield", func(t *testing.T) {
+		var member btf.Member
+		member.Offset = 7
+		member.BitfieldSize = 58
+
+		_, err := checkLastField(&member, nil)
+		test.AssertHaveErr(t, err)
+		test.AssertStrPrefix(t, err.Error(), "unsupported too large bitfield")
+	})
+
+	t.Run("valid bitfield", func(t *testing.T) {
+		var member btf.Member
+		member.Offset = 7
+		member.BitfieldSize = 3
+
+		_, err := checkLastField(&member, nil)
+		test.AssertNoErr(t, err)
+	})
+
 	t.Run("unexpected type", func(t *testing.T) {
 		skb := getSkbBtf(t)
 		_, err := checkLastField(nil, skb.Target)
@@ -619,31 +673,11 @@ func TestCheckLastField(t *testing.T) {
 		test.AssertStrPrefix(t, err.Error(), "unexpected type of last field")
 	})
 
-	t.Run("bitfield", func(t *testing.T) {
-		skb := getSkbBtf(t)
-		_, err := checkLastField(&btf.Member{Offset: 1, BitfieldSize: 1}, skb)
-		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "unexpected member access of bitfield")
-	})
-
-	t.Run("size from bitfield member", func(t *testing.T) {
-		skb := getSkbBtf(t)
-		s, err := checkLastField(&btf.Member{Offset: 0, BitfieldSize: 8}, skb)
-		test.AssertNoErr(t, err)
-		test.AssertEqual(t, s, 1)
-	})
-
 	t.Run("size from type", func(t *testing.T) {
 		skb := getSkbBtf(t)
 		s, err := checkLastField(nil, skb)
 		test.AssertNoErr(t, err)
 		test.AssertEqual(t, s, 8)
-	})
-
-	t.Run("invalid size", func(t *testing.T) {
-		_, err := checkLastField(&btf.Member{Offset: 0, BitfieldSize: 8 * 3}, &btf.Int{})
-		test.AssertHaveErr(t, err)
-		test.AssertStrPrefix(t, err.Error(), "unexpected size")
 	})
 }
 
@@ -726,6 +760,28 @@ func TestCompile(t *testing.T) {
 		test.AssertNoErr(t, err)
 
 		test.AssertEqualSlice(t, insns, cloneSkbLen1024InsnsWithoutExitLabel())
+	})
+
+	t.Run("skb->pkt_type == 3", func(t *testing.T) {
+		expr, err := parse("skb->pkt_type == 3")
+		test.AssertNoErr(t, err)
+
+		insns, err := compile(expr, getSkbBtf(t))
+		test.AssertNoErr(t, err)
+
+		test.AssertEqualSlice(t, insns, asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.RFP, -8, asm.DWord),
+			asm.And.Imm(asm.R3, 0x7),
+			asm.Mov.Imm(asm.R0, 1),
+			asm.JEq.Imm(asm.R3, 3, labelReturn),
+			asm.Xor.Reg(asm.R0, asm.R0),
+			asm.Return().WithSymbol(labelReturn),
+		})
 	})
 
 	t.Run("use label", func(t *testing.T) {

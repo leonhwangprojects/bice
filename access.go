@@ -69,7 +69,11 @@ func Access(opts AccessOptions) (AccessResult, error) {
 	insns, labelUsed := offset2insns(insns, offsets.offsets, opts.Dst, opts.LabelExit, isArr)
 
 	tgt := tgtInfo{0, offsets.lastField, size, offsets.bigEndian}
-	insns, _ = tgt2insns(insns, tgt, opts.Dst)
+	if IsMemberBitfield(offsets.member) {
+		insns, _ = bitfield2insns(insns, tgt.constant, offsets.member, asm.R3)
+	} else {
+		insns, _ = tgt2insns(insns, tgt, asm.R3)
+	}
 
 	return AccessResult{
 		Insns:     insns,

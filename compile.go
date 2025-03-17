@@ -17,12 +17,9 @@ const (
 	labelReturn   = "__return_bice_filter"
 )
 
-func isMemberBitfield(member *btf.Member) bool {
-	if member == nil {
-		return false
-	}
-
-	return member.Offset%8 != 0 || member.BitfieldSize%8 != 0
+// IsMemberBitfield reports whether the member is a bitfield attribute.
+func IsMemberBitfield(member *btf.Member) bool {
+	return member != nil && member.BitfieldSize != 0
 }
 
 type rightInfo struct {
@@ -150,6 +147,10 @@ func expr2offset(expr *cc.Expr, typ btf.Type) (astInfo, error) {
 				j++
 			}
 
+			if IsMemberBitfield(member) {
+				offsets[j] = member.Offset.Bytes()
+			}
+
 			if i == 0 {
 				ast.offsets = offsets
 				ast.member = member
@@ -200,6 +201,23 @@ func offset2insns(insns asm.Instructions, offsets []uint32, dst asm.Register, la
 	}
 
 	return insns, labelUsed
+}
+
+func bitfield2insns(insns asm.Instructions, constant uint64, member *btf.Member, reg asm.Register) (asm.Instructions, uint64) {
+	delta := member.Offset & 0x7
+	if delta != 0 {
+		insns = append(insns,
+			asm.RSh.Imm(reg, int32(delta)), // reg >>= delta
+		)
+	}
+
+	mask := (uint64(1) << uint64(member.BitfieldSize)) - 1
+	constant &= mask
+	insns = append(insns,
+		asm.And.Imm(reg, int32(mask)), // reg &= mask
+	)
+
+	return insns, constant
 }
 
 type tgtInfo struct {
@@ -311,30 +329,23 @@ func op2insns(insns asm.Instructions, op cc.ExprOp, tgt tgtInfo) (asm.Instructio
 }
 
 func checkLastField(member *btf.Member, t btf.Type) (int, error) {
+	if IsMemberBitfield(member) {
+		bits := (member.Offset & 0x7) + member.BitfieldSize
+		if bits > 64 {
+			return 0, fmt.Errorf("unsupported too large bitfield named '%s'", member.Name)
+		}
+
+		return 0, nil
+	}
+
 	t = mybtf.UnderlyingType(t)
 	switch t.(type) {
 	case *btf.Int, *btf.Enum, *btf.Pointer:
+		return btf.Sizeof(t)
+
 	default:
 		return 0, fmt.Errorf("unexpected type of last field: %s", t)
 	}
-
-	if isMemberBitfield(member) {
-		return 0, fmt.Errorf("unexpected member access of bitfield")
-	}
-
-	var size int
-	if member != nil && member.BitfieldSize != 0 {
-		size = int(member.BitfieldSize.Bytes())
-	} else {
-		size, _ = btf.Sizeof(t)
-	}
-	switch size /* byte */ {
-	case 1, 2, 4, 8:
-	default:
-		return 0, fmt.Errorf("unexpected size %d of last field type %s", size, t)
-	}
-
-	return size, nil
 }
 
 func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
@@ -372,7 +383,12 @@ func compile(expr *cc.Expr, typ btf.Type) (asm.Instructions, error) {
 	insns, labelUsed := offset2insns(insns, ast.offsets, asm.R3, labelExitFail, false)
 
 	tgt := tgtInfo{ri.constant, ast.lastField, sizofLastField, ast.bigEndian}
-	insns, tgt.constant = tgt2insns(insns, tgt, asm.R3)
+	if IsMemberBitfield(ast.member) {
+		insns, tgt.constant = bitfield2insns(insns, tgt.constant, ast.member, asm.R3)
+	} else {
+		insns, tgt.constant = tgt2insns(insns, tgt, asm.R3)
+	}
+
 	insns, err = op2insns(insns, expr.Op, tgt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert operator to instructions: %w", err)
