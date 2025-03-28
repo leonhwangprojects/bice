@@ -155,4 +155,25 @@ func TestAccess(t *testing.T) {
 			asm.And.Imm(asm.R3, 0x7),
 		})
 	})
+
+	t.Run("skb->pkt_type and src r1 and dst r2", func(t *testing.T) {
+		res, err := Access(AccessOptions{
+			Expr:      "skb->pkt_type",
+			Type:      getSkbBtf(t),
+			Src:       asm.R1,
+			Dst:       asm.R2,
+			Insns:     nil,
+			LabelExit: labelExitFail,
+		})
+		test.AssertNoErr(t, err)
+		test.AssertEqualSlice(t, res.Insns, asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1),
+			asm.Mov.Imm(asm.R2, 8),
+			asm.Mov.Reg(asm.R1, asm.R10),
+			asm.Add.Imm(asm.R1, -8),
+			asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord),
+			asm.And.Imm(asm.R2, 0x7),
+		})
+	})
 }
